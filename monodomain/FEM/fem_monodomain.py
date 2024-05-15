@@ -8,6 +8,17 @@ import matplotlib.pyplot as plt
 import pyvista
 import time
 
+"""
+This code uses FEM to solve the monodomain model in 2D meshgrid. Spesifically, the code seeks to reproduce the results from
+https://finsberg.github.io/fenics-beat/tests/README.html to check the credability of the solver. The equation we solve 
+reduces to
+
+dv/dt = ∇²v + I_app which is essentially a diffusion equation with a source term.
+
+Currently, the there are numerical unstabilites in the code which needs to be solved.
+
+"""
+
 # Define temporal parameters
 t = 0  # Start time
 T = 1.0  # Final time
