@@ -307,5 +307,8 @@ Error at t=0.5 = 0.62
 Error at t=1 = 0.61
 
 
+
+z
+
 """
 
