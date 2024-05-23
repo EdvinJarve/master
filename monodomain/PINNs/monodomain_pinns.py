@@ -204,14 +204,14 @@ model = PINN(num_inputs=3, num_layers=2, num_neurons=32, device=device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
 scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.96)
 
-epochs = 4000  # Adjust as necessary 
+epochs = 10000  # Adjust as necessary 
 
 # Lists to store loss data for plotting
 loss_list = []
 epoch_list = []
 
 # Training loop
-for epoch in range(epochs):
+for epoch in range(epochs+1):
     pde_loss, IC_loss, BC_loss, total_loss = train_step(X_boundary, X_collocation, X_ic, optimizer, model, normal_vectors)
     
     if epoch % 100 == 0:
@@ -225,7 +225,7 @@ plt.yscale('log')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Training Loss over Epochs')
-plt.savefig(f"fiugres/loss_for_epochs={epochs}.pdf")
+plt.savefig(f"figures/loss_for_epochs={epochs}.pdf")
 
 # Define the spatial grid
 N_space = 20  
@@ -280,9 +280,10 @@ for idx, t in enumerate(time_points):
     ax.set_ylabel('y')
     
     # Calculate and plot error
-    error = np.linalg.norm(predictions - analytical_solution_values)
-    print(f"Error at t={t} = {error:.2f}")
-    
+    error = np.linalg.norm(predictions - analytical_solution_values) / len(predictions.flatten())
+    print(f"Error at t={t} = {error:.2e}")
+
+
     ax = axes[3*idx + 2]
     error_contour = ax.contourf(x_grid, y_grid, np.abs(predictions - analytical_solution_values), levels=50, cmap='viridis')
     fig.colorbar(error_contour, ax=ax)
@@ -301,10 +302,15 @@ plt.show()
 """
 Some results:
 
-4000 epochs 
+Epoch 5000, PDE Loss: 2.8820e-02, IC Loss: 1.8764e-04, BC Loss: 6.2604e-03, Total Loss: 3.5268e-02
 
-Error at t=0.5 = 0.62
-Error at t=1 = 0.61
+Error at t=0.5 = 6.04e-04
+Error at t=1 = 9.46e-04
+
+Epoch 10000, PDE Loss: 1.6222e-02, IC Loss: 1.4379e-04, BC Loss: 4.6918e-03, Total Loss: 2.1058e-02
+Error at t=0.5 = 1.56e-03
+Error at t=1 = 1.40e-03
+
 
 """
 
