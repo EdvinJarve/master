@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Xdmf Version="3.0" xmlns:xi="https://www.w3.org/2001/XInclude">
+  <Domain>
+    <Grid Name="mesh" GridType="Uniform">
+      <Topology TopologyType="Triangle" NumberOfElements="200" NodesPerElement="3">
+        <DataItem Dimensions="200 3" NumberType="Int" Format="HDF">bidomain_solution.h5:/Mesh/mesh/topology</DataItem>
+      </Topology>
+      <Geometry GeometryType="XY">
+        <DataItem Dimensions="121 2" Format="HDF">bidomain_solution.h5:/Mesh/mesh/geometry</DataItem>
+      </Geometry>
+    </Grid>
+    <Grid Name="phi_i_h" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="phi_i_h" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0" />
+        <Attribute Name="phi_i_h" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="121 1" Format="HDF">bidomain_solution.h5:/Function/phi_i_h/0</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="phi_e_h" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="phi_e_h" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0" />
+        <Attribute Name="phi_e_h" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="121 1" Format="HDF">bidomain_solution.h5:/Function/phi_e_h/0</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+  </Domain>
+</Xdmf>
