@@ -16,7 +16,6 @@ The `bidomain` directory contains the scripts for bidomain simulations:
 - **bi_case1.py**: Script for the bidomain simulation case with analytic solution for testing the solver.
 - **bi_case2.py**: Script for the bidomain simulation case with an applied corner current.
 - **bi_case3.py**: Script for the bidomain simulation case with an applied corner current with a strong nonisotropic conductivity tensor.
-### Bidomain Simulations
 
 ### Results
 
