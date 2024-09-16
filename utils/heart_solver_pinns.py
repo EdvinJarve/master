@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import torch.nn as nn
-import time
+import numpy as np
+import time 
 
 class PINN(nn.Module):
     """
@@ -70,11 +70,11 @@ class MonodomainSolverPINNs(PINN):
             source_term_func (callable): Function representing the source term in the PDE.
             M (float or np.ndarray): Conductivity tensor.
         """
-        super(MonodomainSolverPINNs, self).__init__(num_inputs, num_layers, num_neurons, 1, device)  # 1 output
+        super(MonodomainSolverPINNs, self).__init__(num_inputs, num_layers, num_neurons, 1, device)
         self.source_term_func = source_term_func
-        self.M = M
+        self.M = torch.tensor(M, dtype=torch.float32, device=device) if isinstance(M, (float, int, np.ndarray)) else M
+        self.is_scalar_M = self.M.ndim == 0
 
-    
     def prepare_data(self, N_space, N_time):
         """
         Prepare the training data for the monodomain solver.
@@ -138,8 +138,8 @@ class MonodomainSolverPINNs(PINN):
         X_boundary = np.vstack((x_boundary_all, y_boundary_all, t_boundary_all)).T
         self.X_boundary = torch.tensor(X_boundary, dtype=torch.float32, device=self.device)
 
-        # Define boundary normal vectors
-        normal_vectors = np.zeros_like(X_boundary)
+        # Define boundary normal vectors (only spatial components)
+        normal_vectors = np.zeros((X_boundary.shape[0], 2))  # Only x and y components
         x_coords = X_boundary[:, 0]
         y_coords = X_boundary[:, 1]
 
@@ -154,7 +154,6 @@ class MonodomainSolverPINNs(PINN):
 
         self.normal_vectors = torch.tensor(normal_vectors, dtype=torch.float32, device=self.device)
 
-    
     def pde(self, X_collocation):
         """
         Define the partial differential equation for the monodomain model.
@@ -165,52 +164,38 @@ class MonodomainSolverPINNs(PINN):
         Returns:
             torch.Tensor: Residual loss.
         """
-        x = X_collocation[:, 0:1]  # X spatial coordinates
-        y = X_collocation[:, 1:2]  # Y spatial coordinates
-        t = X_collocation[:, 2:3]  # Time coordinates
+        X_collocation.requires_grad_(True)
 
-        x.requires_grad_(True)
-        y.requires_grad_(True)
-        t.requires_grad_(True)
+        # Forward pass
+        v = self.model(X_collocation)
 
-        outputs = self.model(torch.cat([x, y, t], dim=1))
-        v = outputs[:, 0:1]
+        # Compute gradients with respect to inputs
+        grads = torch.autograd.grad(v, X_collocation, grad_outputs=torch.ones_like(v), create_graph=True)[0]
+        v_x = grads[:, 0:1]
+        v_y = grads[:, 1:2]
+        v_t = grads[:, 2:3]
 
-        # First derivatives
-        v_t = torch.autograd.grad(v, t, grad_outputs=torch.ones_like(v), create_graph=True, retain_graph=True)[0]
-        v_x = torch.autograd.grad(v, x, grad_outputs=torch.ones_like(v), create_graph=True, retain_graph=True)[0]
-        v_y = torch.autograd.grad(v, y, grad_outputs=torch.ones_like(v), create_graph=True, retain_graph=True)[0]
+        # Compute second derivatives
+        v_xx = torch.autograd.grad(v_x, X_collocation, grad_outputs=torch.ones_like(v_x), create_graph=True)[0][:, 0:1]
+        v_yy = torch.autograd.grad(v_y, X_collocation, grad_outputs=torch.ones_like(v_y), create_graph=True)[0][:, 1:2]
 
-        # Gradient vector
-        grad_v = torch.cat([v_x, v_y], dim=1)
+        # Compute Laplacian
+        laplacian_v = self.M * (v_xx + v_yy)
 
-        # Ensure Mi is a tensor
-        self.M = torch.tensor(self.M, dtype=torch.float32, device=x.device) if isinstance(self.M, (float, int, np.ndarray)) else self.M
-
-        if self.M.ndim == 0:  # Scalar case
-            # Second derivatives for scalar case
-            v_xx = torch.autograd.grad(v_x, x, grad_outputs=torch.ones_like(v_x), create_graph=True)[0]
-            v_yy = torch.autograd.grad(v_y, y, grad_outputs=torch.ones_like(v_y), create_graph=True)[0]
-            laplacian_v = self.M * (v_xx + v_yy)
-        else:  # Tensor case
-            Mi_grad_v = grad_v @ self.M
-
-            # Divergence of Mi * grad(v)
-            div_Mi_grad_v = torch.autograd.grad(Mi_grad_v[:, 0], x, grad_outputs=torch.ones_like(Mi_grad_v[:, 0]), create_graph=True)[0] + \
-                            torch.autograd.grad(Mi_grad_v[:, 1], y, grad_outputs=torch.ones_like(Mi_grad_v[:, 1]), create_graph=True)[0]
-            laplacian_v = div_Mi_grad_v
-
-        # Ionic current source term
+        # Source term
+        x = X_collocation[:, 0:1]
+        y = X_collocation[:, 1:2]
+        t = X_collocation[:, 2:3]
         I_ion = self.source_term_func(x, y, t)
 
         # Residual for the monodomain equation
         residual = v_t - laplacian_v - I_ion
 
-        # Combined residual
+        # Residual loss
         residual_loss = residual.pow(2).mean()
 
         return residual_loss
-    
+
     def IC(self, x):
         """
         Define the initial condition for the monodomain model.
@@ -221,18 +206,11 @@ class MonodomainSolverPINNs(PINN):
         Returns:
             torch.Tensor: Initial condition loss.
         """
-        x_space = x[:, 0:1]  # X spatial coordinates
-        y_space = x[:, 1:2]  # Y spatial coordinates
-        t_time = x[:, 2:3]  # Time coordinate
-
-        # Create a tensor of zeros with the same shape as t_time to represent initial condition
-        expected_u0 = torch.zeros_like(t_time)
-        # Evaluate the model at the initial time
-        u0 = self.forward(torch.cat((x_space, y_space, torch.zeros_like(t_time)), dim=1))
-
-        # Calculate the squared error between the predicted and expected initial condition
+        x.requires_grad_(True)
+        u0 = self.forward(x)
+        expected_u0 = torch.zeros_like(u0)
         return (u0 - expected_u0).pow(2).mean()
-    
+
     def BC_neumann(self, x, normal_vectors):
         """
         Define the Neumann boundary condition for the monodomain model.
@@ -248,33 +226,52 @@ class MonodomainSolverPINNs(PINN):
         u = self.forward(x)
 
         # Compute gradients of u with respect to spatial coordinates
-        gradients = torch.autograd.grad(outputs=u, inputs=x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-        normal_flux = torch.sum(gradients * normal_vectors, dim=1)
+        grads = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+        gradients = grads[:, :2]  # Only spatial gradients (x and y)
+
+        # Ensure normal_vectors has shape [batch_size, 2]
+        # normal_vectors are already of shape [batch_size, 2]
+
+        # Compute the normal flux
+        normal_flux = torch.sum(gradients * normal_vectors, dim=1, keepdim=True)
 
         expected_value = torch.zeros_like(normal_flux)
         return (normal_flux - expected_value).pow(2).mean()
-    
-    def train_step(self, optimizer):
+
+    def train_step(self, optimizer, batch_size):
         """
         Perform a single training step.
 
         Parameters:
             optimizer (torch.optim.Optimizer): Optimizer for training.
+            batch_size (int): Batch size
 
         Returns:
             tuple: PDE loss, initial condition loss, boundary condition loss, and total loss.
         """
         optimizer.zero_grad()
 
-        IC_loss = self.IC(self.X_ic)
-        pde_loss = self.pde(self.X_collocation)
-        BC_loss = self.BC_neumann(self.X_boundary, self.normal_vectors)
+        # Sample batches
+        idx_ic = torch.randint(0, self.X_ic.shape[0], (batch_size,))
+        idx_collocation = torch.randint(0, self.X_collocation.shape[0], (batch_size,))
+        idx_boundary = torch.randint(0, self.X_boundary.shape[0], (batch_size,))
+
+        X_ic_batch = self.X_ic[idx_ic]
+        X_collocation_batch = self.X_collocation[idx_collocation]
+        X_boundary_batch = self.X_boundary[idx_boundary]
+        normal_vectors_batch = self.normal_vectors[idx_boundary]
+
+        IC_loss = self.IC(X_ic_batch)
+        pde_loss = self.pde(X_collocation_batch)
+        BC_loss = self.BC_neumann(X_boundary_batch, normal_vectors_batch)
 
         total_loss = IC_loss + BC_loss + pde_loss
         total_loss.backward()
         optimizer.step()
 
         return pde_loss.item(), IC_loss.item(), BC_loss.item(), total_loss.item()
+
+
     
 class BidomainSolverPINNs(PINN):
     """
@@ -392,22 +389,20 @@ class BidomainSolverPINNs(PINN):
         Returns:
             torch.Tensor: Residual loss of the PDE.
         """
-        x = X_collocation[:, 0:1]  # X spatial coordinates
-        y = X_collocation[:, 1:2]  # Y spatial coordinates
-        t = X_collocation[:, 2:3]  # Time coordinates
-
-        x.requires_grad_(True)
-        y.requires_grad_(True)
-        t.requires_grad_(True)
+        X_collocation.requires_grad_(True)
+        x = X_collocation[:, 0:1]
+        y = X_collocation[:, 1:2]
+        t = X_collocation[:, 2:3]
 
         outputs = self.model(torch.cat([x, y, t], dim=1))
         v = outputs[:, 0:1]
         ue = outputs[:, 1:2]
 
         # First derivatives
-        v_t = torch.autograd.grad(v, t, grad_outputs=torch.ones_like(v), create_graph=True, retain_graph=True)[0]
-        v_x = torch.autograd.grad(v, x, grad_outputs=torch.ones_like(v), create_graph=True, retain_graph=True)[0]
-        v_y = torch.autograd.grad(v, y, grad_outputs=torch.ones_like(v), create_graph=True, retain_graph=True)[0]
+        v_t = torch.autograd.grad(v, t, grad_outputs=torch.ones_like(v), create_graph=True)[0]
+        v_x = torch.autograd.grad(v, x, grad_outputs=torch.ones_like(v), create_graph=True)[0]
+        v_y = torch.autograd.grad(v, y, grad_outputs=torch.ones_like(v), create_graph=True)[0]
+
 
         ue_x = torch.autograd.grad(ue, x, grad_outputs=torch.ones_like(ue), create_graph=True, retain_graph=True)[0]
         ue_y = torch.autograd.grad(ue, y, grad_outputs=torch.ones_like(ue), create_graph=True, retain_graph=True)[0]
