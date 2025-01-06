@@ -48,7 +48,6 @@ os.makedirs(results_dir, exist_ok=True)
 def ode_func_fhn(v, state_vars, X):
     """
     Compute the ODE residuals for the FitzHugh-Nagumo model.
-
     Parameters:
         v (torch.Tensor): Membrane potential tensor of shape (N, 1).
         state_vars (torch.Tensor): State variable tensor of shape (N, n_state_vars).
@@ -176,17 +175,53 @@ sim_fem = MonodomainSolverFEMHardcode(
     theta=theta                     # Splitting parameter
 )
 
-# Run the simulation
-errors_v, computation_time, solutions_fem = sim_fem.run(
-    analytical_solution_v=None,  # Replace with analytical solution function if available
-    time_points=time_points             # Replace with specific time points if needed
-)
+# =============================================================================
+# Save FEM Data
+# =============================================================================
 
+# Define time points (100 timesteps)
+time_points = np.arange(0.0, T + dt, dt)  # Or use np.round(np.linspace(0.0, T, Nt), decimals=10)
+
+# Run FEM simulation
+errors_fem, computation_time_fem, solutions_fem = sim_fem.run(time_points=time_points)
+
+print(solutions_fem)
+
+# Extract FEM dof coordinates
 dof_coords = sim_fem.V.tabulate_dof_coordinates()
 x_coords = dof_coords[:, 0]
 y_coords = dof_coords[:, 1]
-print(f"Simulation completed in {computation_time:.2f} seconds.")
 
+# Create triangulation for plotting (optional)
+triang = Triangulation(x_coords, y_coords)
+
+# Prepare data for saving
+all_times = np.array(time_points)
+fem_matrix = np.vstack([solutions_fem[t] for t in time_points]).T
+
+# Save the FEM data
+fem_data_file = os.path.join(results_dir, 'fem_data_fhn.npz')
+np.savez(fem_data_file, x_coords=x_coords, y_coords=y_coords, time_points=all_times, fem_solutions=fem_matrix)
+print(f"FEM data saved to {fem_data_file}.")
+
+# =============================================================================
+# Load and Print FEM Data for Verification
+# =============================================================================
+
+# Load the saved FEM data
+loaded_fem_data = np.load(fem_data_file)
+
+# Extract and print some of the saved content
+x_coords_loaded = loaded_fem_data['x_coords']
+y_coords_loaded = loaded_fem_data['y_coords']
+time_points_loaded = loaded_fem_data['time_points']
+fem_solutions_loaded = loaded_fem_data['fem_solutions']
+
+print("\nLoaded FEM Data:")
+print(f"x_coords (first 5): {x_coords_loaded[:5]}")
+print(f"y_coords (first 5): {y_coords_loaded[:5]}")
+print(f"time_points (all): {time_points_loaded}")
+print(f"FEM solutions (first 5 points at first 3 timesteps):\n{fem_solutions_loaded[:5, :3]}")
 # =============================================================================
 # 4. PINNs Simulation Setup
 # =============================================================================

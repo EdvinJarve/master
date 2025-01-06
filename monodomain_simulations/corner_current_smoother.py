@@ -160,18 +160,43 @@ sim_fem = MonodomainSolverFEM(
     initial_v=0.0  # Optional since default is 0.0
 )
 
-# Define time points to store solutions
-time_points = [0.0, 0.1, 0.2, 0.4, 0.8, 1.0]
 
-# Run FEM simulation with time_points to obtain solutions_fem
-errors_fem, computation_time_fem, solutions_fem = sim_fem.run(time_points=time_points)
-end_time_fem = time.time()
-print(f"FEM simulation complete in {end_time_fem - start_time_fem:.2f} seconds\n")
+# =============================================================================
+# Save FEM Data
+# =============================================================================
 
-# Extract coordinates of degrees of freedom
+
+# Extract FEM dof coordinates
 dof_coords = sim_fem.V.tabulate_dof_coordinates()
 x_coords = dof_coords[:, 0]
 y_coords = dof_coords[:, 1]
+
+# Define time points (manual selection to ensure valid outputs)
+time_points = np.arange(0.0, T + dt, dt)  # Or use np.round(np.linspace(0.0, T, Nt), decimals=10)
+print(time_points)
+
+# Run FEM simulation
+errors_fem, computation_time_fem, solutions_fem = sim_fem.run(time_points=time_points)
+
+print(solutions_fem)
+# =============================================================================
+# Load and Print FEM Data for Verification
+# =============================================================================
+
+# Load the saved FEM data
+loaded_fem_data = np.load(fem_data_file)
+
+# Extract and print some of the saved content
+x_coords_loaded = loaded_fem_data['x_coords']
+y_coords_loaded = loaded_fem_data['y_coords']
+time_points_loaded = loaded_fem_data['time_points']
+fem_solutions_loaded = loaded_fem_data['fem_solutions']
+
+print("\nLoaded FEM Data:")
+print(f"x_coords (first 5): {x_coords_loaded[:5]}")
+print(f"y_coords (first 5): {y_coords_loaded[:5]}")
+print(f"time_points (all): {time_points_loaded}")
+print(f"FEM solutions (first 5 points at first 3 timesteps):\n{fem_solutions_loaded[:5, :3]}")
 
 
 # =============================================================================

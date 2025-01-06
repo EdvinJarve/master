@@ -28,10 +28,9 @@ class PINN(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
+
 class MonodomainSolverPINNs(PINN):
-    """
-    PINN solver for the monodomain model with support for explicit source terms or ODE-governed current terms.
-    """
     def __init__(
         self,
         num_inputs: int,
@@ -45,18 +44,16 @@ class MonodomainSolverPINNs(PINN):
         n_state_vars: int = 0,
         loss_function: str = 'L2',
         loss_weights: Optional[Dict[str, float]] = None,
-        weight_strategy: str = 'manual',  # 'manual' or 'dynamic'
-        alpha: float = 0.9,  # moving average parameter for dynamic weights
+        weight_strategy: str = 'manual',
+        alpha: float = 0.9,
         x_min: float = 0.0,
         x_max: float = 1.0,
         y_min: float = 0.0,
         y_max: float = 1.0,
         t_min: float = 0.0,
-        t_max: float = 1.0
+        t_max: float = 1.0,
+        scaling_func: Optional[Callable[[torch.Tensor], torch.Tensor]] = None
     ):
-        """
-        Initializes the MonodomainSolverPINNs.
-        """
         if use_ode:
             output_dimension = 1 + n_state_vars
         else:
@@ -78,10 +75,9 @@ class MonodomainSolverPINNs(PINN):
         self.n_state_vars = n_state_vars
         self.loss_function = loss_function
 
-        # Initialize loss weights based on strategy
         self.weight_strategy = weight_strategy
         self.alpha = alpha
-        
+
         if weight_strategy == 'manual':
             if loss_weights is None:
                 self.loss_weights = {
@@ -93,17 +89,14 @@ class MonodomainSolverPINNs(PINN):
                 }
             else:
                 self.loss_weights = loss_weights
-        else:  # dynamic
-            # Initialize dynamic weights
+        else:
             self.lambda_ic = torch.tensor(1.0, device=device)
             self.lambda_bc = torch.tensor(1.0, device=device)
             self.lambda_r = torch.tensor(1.0, device=device)
 
-        # Initialize data points and expected outputs for data loss
         self.X_data = None
         self.expected_data = None
 
-        # Initialize loss function object for data loss
         if self.loss_function == 'L2':
             self.loss_function_obj = nn.MSELoss()
         elif self.loss_function == 'L1':
@@ -111,118 +104,74 @@ class MonodomainSolverPINNs(PINN):
         else:
             raise ValueError(f"Unsupported loss function: {self.loss_function}")
 
+        # Scaling function (can be None)
+        self.scaling_func = scaling_func
+
+    def apply_scaling(self, X: torch.Tensor) -> torch.Tensor:
+        # Apply scaling if a scaling_func is provided, otherwise return X as-is
+        if self.scaling_func is not None:
+            return self.scaling_func(X)
+        return X
+
     def pde(self, X_collocation: torch.Tensor) -> (torch.Tensor, torch.Tensor):
-        """
-        Compute the PDE residual loss and ODE residual loss (if applicable).
-        """
-        # Input is already normalized, no need to scale
         X_collocation.requires_grad_(True)
         
-        # Forward pass through the network
-        outputs = self.forward(X_collocation)
+        # Scale inputs before passing to the model
+        X_scaled = self.apply_scaling(X_collocation)
+        outputs = self.forward(X_scaled)
         
-        # Extract u and compute gradients
         if self.use_ode:
-            u = outputs[:, 0:1]  # Shape: (N_collocation, 1)
-            w = outputs[:, 1:]   # Shape: (N_collocation, n_state_vars)
+            u = outputs[:, 0:1]
+            w = outputs[:, 1:]
         else:
-            u = outputs  # Shape: (N_collocation, 1)
-        
-        # Compute gradients
+            u = outputs
+
         du_dx = torch.autograd.grad(u.sum(), X_collocation, create_graph=True)[0]
-        d2u_dx2 = torch.zeros_like(u)
-        
-        # Second derivatives for x and y
         d2u_dx2_x = torch.autograd.grad(du_dx[:, 0].sum(), X_collocation, create_graph=True)[0][:, 0:1]
         d2u_dx2_y = torch.autograd.grad(du_dx[:, 1].sum(), X_collocation, create_graph=True)[0][:, 1:2]
-        
-        # Time derivative
         du_dt = du_dx[:, 2:3]
-        
-        # Compute Laplacian term
+
         if self.is_scalar_M:
             laplacian_term = self.M * (d2u_dx2_x + d2u_dx2_y)
         else:
-            # For tensor conductivity
-            laplacian_term = (
-                self.M[0] * d2u_dx2_x +
-                self.M[1] * d2u_dx2_y
-            )
-        
-        # Compute source term
+            laplacian_term = (self.M[0] * d2u_dx2_x + self.M[1] * d2u_dx2_y)
+
         if self.use_ode:
-            # Use ODE for current terms
             ode_residuals = self.ode_func(u, w, X_collocation)
-            source_term = ode_residuals[:, 0:1]  # First residual corresponds to u
-            ode_loss = torch.mean(torch.square(ode_residuals[:, 1:]))  # Remaining residuals
+            source_term = ode_residuals[:, 0:1]
+            ode_loss = torch.mean((ode_residuals[:, 1:])**2)
         else:
-            # Use explicit source term function
             source_term = self.source_term_func(X_collocation[:, :2], X_collocation[:, 2:3])
             ode_loss = torch.tensor(0.0, device=self.device)
-        
-        # Compute PDE residual: du/dt - div(M * grad(u)) = I_ion
+
         pde_residual = du_dt - laplacian_term - source_term
-        
-        # Compute mean squared PDE residual
-        pde_loss = torch.mean(torch.square(pde_residual))
-        
+        pde_loss = torch.mean(pde_residual**2)
         return pde_loss, ode_loss
 
     def IC(self, X_ic: torch.Tensor, expected_u0: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the Initial Condition (IC) loss.
-        """
-        # The input X_ic is already normalized, no need to scale it
-        X_ic.requires_grad_(True)
-        
-        # Forward pass through the network with scaled input
-        outputs = self.forward(X_ic)
-        
-        # Extract u based on whether ODE is used
+        X_scaled = self.apply_scaling(X_ic)
+        outputs = self.forward(X_scaled)
         if self.use_ode:
-            u0 = outputs[:, 0:1]  # Assuming u0 is the first output
+            u0 = outputs[:, 0:1]
         else:
-            u0 = outputs  # Shape: (N, 1)
-        
-        # Compute loss using unscaled values
-        if self.loss_function == 'L2':
-            IC_loss = nn.MSELoss()(u0, expected_u0.to(self.device))
-        elif self.loss_function == 'L1':
-            IC_loss = nn.L1Loss()(u0, expected_u0.to(self.device))
-        else:
-            raise ValueError(f"Unknown loss function: {self.loss_function}")
-        
+            u0 = outputs
+        IC_loss = self.loss_function_obj(u0, expected_u0.to(self.device))
         return IC_loss
 
-    def BC_neumann(
-        self,
-        X_boundary: torch.Tensor,
-        normal_vectors: torch.Tensor,
-        expected_value: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Compute the Neumann Boundary Condition (BC) loss.
-        """
-        # Input is already normalized, no need to scale
+    def BC_neumann(self, X_boundary: torch.Tensor, normal_vectors: torch.Tensor, expected_value: Optional[torch.Tensor] = None) -> torch.Tensor:
         X_boundary.requires_grad_(True)
-        
-        # Forward pass through the network
-        outputs = self.forward(X_boundary)
-        
-        # Extract u
+        X_scaled = self.apply_scaling(X_boundary)
+        outputs = self.forward(X_scaled)
         if self.use_ode:
-            u = outputs[:, 0:1]  # Shape: (N_BC, 1)
+            u = outputs[:, 0:1]
         else:
-            u = outputs  # Shape: (N_BC, 1)
-        
-        # Compute spatial derivatives
+            u = outputs
+
         du_dx = torch.autograd.grad(u.sum(), X_boundary, create_graph=True)[0][:, :2]
-        
-        # Compute normal derivative
+
         if self.is_scalar_M:
             normal_deriv = self.M * torch.sum(du_dx * normal_vectors, dim=1, keepdim=True)
         else:
-            # For tensor conductivity
             normal_deriv = torch.sum(
                 torch.stack([
                     self.M[0] * du_dx[:, 0],
@@ -231,48 +180,28 @@ class MonodomainSolverPINNs(PINN):
                 dim=0,
                 keepdim=True
             ).t()
-        
-        # If no expected value is provided, assume zero Neumann BC
+
         if expected_value is None:
             expected_value = torch.zeros_like(normal_deriv)
-        
-        # Compute BC loss
-        bc_loss = torch.mean(torch.square(normal_deriv - expected_value))
-        
+        bc_loss = torch.mean((normal_deriv - expected_value)**2)
         return bc_loss
 
     def data_loss(self, X_data: torch.Tensor, expected_data: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the data loss between the model's predictions and expected data.
-        """
-        self.train()
-        outputs = self.forward(X_data)
-        
-        # Extract u based on whether ODE is used
+        # Typically data points don't need gradients
+        X_scaled = self.apply_scaling(X_data)
+        outputs = self.forward(X_scaled)
         if self.use_ode:
-            u = outputs[:, 0:1]  # Assuming u is the first output
+            u = outputs[:, 0:1]
         else:
-            u = outputs  # Shape: (N, 1)
-        
-        if self.loss_function == 'L2':
-            loss = nn.MSELoss()(u, expected_data.to(self.device))
-        elif self.loss_function == 'L1':
-            loss = nn.L1Loss()(u, expected_data.to(self.device))
-        else:
-            raise ValueError(f"Unknown loss function: {self.loss_function}")
-        
-        return loss
+            u = outputs
+        return self.loss_function_obj(u, expected_data.to(self.device))
+
 
     def train_step(self, optimizer: torch.optim.Optimizer, batch_size: Optional[int] = None) -> tuple:
-        """
-        Perform a single training step.
-        """
         self.train()
         optimizer.zero_grad()
 
-        # Get mini-batches if batch_size is specified
         if batch_size is not None:
-            # Generate separate indices for each dataset since they might have different sizes
             collocation_indices = torch.randperm(self.X_collocation.size(0))[:batch_size]
             ic_indices = torch.randperm(self.X_ic.size(0))[:batch_size]
             boundary_indices = torch.randperm(self.X_boundary.size(0))[:batch_size]
@@ -299,7 +228,6 @@ class MonodomainSolverPINNs(PINN):
             X_data_batch = self.X_data
             expected_data_batch = self.expected_data
 
-        # Update weights if using dynamic strategy
         if self.weight_strategy == 'dynamic':
             self.update_weights(
                 X_collocation_batch,
@@ -309,12 +237,10 @@ class MonodomainSolverPINNs(PINN):
                 normal_vectors_batch
             )
 
-        # Compute losses
         IC_loss = self.IC(X_ic_batch, expected_u0_batch)
         BC_loss = self.BC_neumann(X_boundary_batch, normal_vectors_batch)
         pde_loss, ode_loss = self.pde(X_collocation_batch)
 
-        # Apply loss weights and aggregate
         if self.weight_strategy == 'manual':
             total_loss = (
                 self.loss_weights['IC_loss'] * IC_loss +
@@ -322,7 +248,7 @@ class MonodomainSolverPINNs(PINN):
                 self.loss_weights['pde_loss'] * pde_loss +
                 self.loss_weights['ode_loss'] * ode_loss
             )
-        else:  # dynamic
+        else:
             total_loss = (
                 self.lambda_ic * IC_loss +
                 self.lambda_bc * BC_loss +
@@ -330,36 +256,29 @@ class MonodomainSolverPINNs(PINN):
                 ode_loss
             )
 
-        # Compute data loss if applicable
         if X_data_batch is not None and expected_data_batch is not None:
             data_loss = self.data_loss(X_data_batch, expected_data_batch)
             if self.weight_strategy == 'manual':
                 total_loss += self.loss_weights['data_loss'] * data_loss
-            else:  # dynamic
+            else:
                 total_loss += data_loss
         else:
             data_loss = torch.tensor(0.0, device=self.device)
 
-        # Backpropagation with retain_graph=True
         total_loss.backward(retain_graph=True)
         optimizer.step()
 
-        # Return loss values
         return pde_loss.item(), IC_loss.item(), BC_loss.item(), data_loss.item(), ode_loss.item(), total_loss.item()
 
-    def evaluate(self, X_test: torch.Tensor, y_true: Optional[torch.Tensor] = None) -> Union[torch.Tensor, tuple]:
-        """
-        Evaluate the trained model on test data.
-        """
+    def evaluate(self, X_eval: torch.Tensor, y_true: Optional[torch.Tensor] = None):
         self.eval()
         with torch.no_grad():
-            outputs = self.model(X_test.to(self.device))
+            outputs = self.forward(X_eval.to(self.device))
         
-        # Extract u based on whether ODE is used
         if self.use_ode:
-            y_pred = outputs[:, 0:1]  # Only u
+            y_pred = outputs[:, 0:1]
         else:
-            y_pred = outputs  # Shape: (N, 1)
+            y_pred = outputs
 
         if y_true is not None:
             if self.loss_function == 'L2':
@@ -372,106 +291,75 @@ class MonodomainSolverPINNs(PINN):
         else:
             return y_pred.cpu()
 
-
     def validate(self, X_collocation_val, X_ic_val, expected_u0_val, X_boundary_val, normal_vectors_val):
         self.eval()
-        with torch.enable_grad():  # Enable gradients only within this block
-            # Compute PDE Loss
+        with torch.enable_grad():
             pde_loss_val, ode_loss_val = self.pde(X_collocation_val)
-            
-            # Compute IC Loss
             ic_loss_val = self.IC(X_ic_val, expected_u0_val)
-            
-            # Compute BC Loss
             bc_loss_val = self.BC_neumann(X_boundary_val, normal_vectors_val)
-            
-            # Total Validation Loss
+
             if self.weight_strategy == 'manual':
                 total_val_loss = (
                     self.loss_weights['pde_loss'] * pde_loss_val +
                     self.loss_weights['IC_loss'] * ic_loss_val +
                     self.loss_weights['BC_loss'] * bc_loss_val
                 )
-            else:  # dynamic
+            else:
                 total_val_loss = (
                     self.lambda_ic * ic_loss_val +
                     self.lambda_bc * bc_loss_val +
                     self.lambda_r * pde_loss_val +
                     ode_loss_val
                 )
-        
+
         return total_val_loss.item()
 
-
     def save_model(self, file_path):
-        """
-        Save the trained model's state dictionary to a file.
-        """
         torch.save(self.model.state_dict(), file_path)
         print(f"Model saved to {file_path}")
 
     def load_model(self, file_path):
-        """
-        Load the model's state dictionary from a file.
-        """
         self.model.load_state_dict(torch.load(file_path, map_location=self.device))
         self.model.to(self.device)
         self.eval()
         print(f"Model loaded from {file_path}")
 
     def compute_gradient_norms(self, X_collocation, X_ic, expected_u0, X_boundary, normal_vectors):
-        """Compute L2 norms of gradients for each loss component."""
         self.zero_grad()
-        
-        # Compute losses
         pde_loss, _ = self.pde(X_collocation)
         ic_loss = self.IC(X_ic, expected_u0)
         bc_loss = self.BC_neumann(X_boundary, normal_vectors)
-        
-        # Compute gradients with allow_unused=True and retain_graph=True
+
         grad_r = torch.autograd.grad(pde_loss, self.parameters(), create_graph=True, allow_unused=True, retain_graph=True)
         grad_ic = torch.autograd.grad(ic_loss, self.parameters(), create_graph=True, allow_unused=True, retain_graph=True)
         grad_bc = torch.autograd.grad(bc_loss, self.parameters(), create_graph=True, allow_unused=True, retain_graph=True)
-        
-        # Filter out None gradients and compute L2 norms, then detach
+
         norm_r = torch.sqrt(sum(torch.sum(g**2) for g in grad_r if g is not None)).detach()
         norm_ic = torch.sqrt(sum(torch.sum(g**2) for g in grad_ic if g is not None)).detach()
         norm_bc = torch.sqrt(sum(torch.sum(g**2) for g in grad_bc if g is not None)).detach()
-        
+
         return norm_r, norm_ic, norm_bc
 
     def update_weights(self, X_collocation, X_ic, expected_u0, X_boundary, normal_vectors):
-        """Update weights using gradient norms and moving average."""
         if self.weight_strategy != 'dynamic':
             return
-            
-        # Compute gradient norms
         norm_r, norm_ic, norm_bc = self.compute_gradient_norms(
             X_collocation, X_ic, expected_u0, X_boundary, normal_vectors
         )
-        
-        # Compute sum of norms
+
         sum_norms = (norm_r + norm_ic + norm_bc).detach()
-        
-        # Compute new weights
-        lambda_ic_new = (sum_norms / (norm_ic + 1e-8)).detach()  # Add small epsilon to prevent division by zero
+        lambda_ic_new = (sum_norms / (norm_ic + 1e-8)).detach()
         lambda_bc_new = (sum_norms / (norm_bc + 1e-8)).detach()
         lambda_r_new = (sum_norms / (norm_r + 1e-8)).detach()
-        
-        # Update weights using moving average
+
         self.lambda_ic = self.alpha * self.lambda_ic + (1 - self.alpha) * lambda_ic_new
         self.lambda_bc = self.alpha * self.lambda_bc + (1 - self.alpha) * lambda_bc_new
         self.lambda_r = self.alpha * self.lambda_r + (1 - self.alpha) * lambda_r_new
-
 # ====================================================================================
 # INVERSE PROBLEM STUFF!! (in the making)
 # ===================================================================================
 
-
 class InverseMonodomainSolverPINNs(MonodomainSolverPINNs):
-    """
-    Inverse PINN solver for the monodomain equation that estimates the parameter M.
-    """
     def __init__(
         self,
         num_inputs: int,
@@ -479,14 +367,16 @@ class InverseMonodomainSolverPINNs(MonodomainSolverPINNs):
         num_neurons: int,
         device: str,
         source_term_func: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
-        initial_M: Union[float, List[float], np.ndarray, torch.Tensor] = 0.1,  # M
+        initial_M: Union[float, List[float], np.ndarray, torch.Tensor] = 0.1,
         use_ode: bool = False,
         ode_func: Optional[Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]] = None,
         n_state_vars: int = 0,
         loss_function: str = 'L2',
-        loss_weights: Optional[Dict[str, float]] = None
+        loss_weights: Optional[Dict[str, float]] = None,
+        weight_strategy: str = 'manual',  # add weight_strategy here
+        alpha: float = 0.9,               # add alpha here
+        scaling_func: Optional[Callable[[torch.Tensor], torch.Tensor]] = None
     ):
-        # Convert initial_M to tensor if it's a float, list or numpy array
         if isinstance(initial_M, (float, int)):
             initial_M = torch.tensor([initial_M], dtype=torch.float32)
         elif isinstance(initial_M, (list, np.ndarray)):
@@ -498,73 +388,60 @@ class InverseMonodomainSolverPINNs(MonodomainSolverPINNs):
             num_neurons=num_neurons,
             device=device,
             source_term_func=source_term_func,
-            M=initial_M,  # Pass the initial tensor M
+            M=initial_M,
             use_ode=use_ode,
             ode_func=ode_func,
             n_state_vars=n_state_vars,
             loss_function=loss_function,
-            loss_weights=loss_weights
+            loss_weights=loss_weights,
+            weight_strategy=weight_strategy,  # pass it to parent
+            alpha=alpha,                       # pass alpha to parent
+            scaling_func=scaling_func
         )
         
-        # Instead of a fixed M, we define M as a trainable parameter with 1 component
+        # M as a trainable parameter
         self.M = nn.Parameter(initial_M.to(device))
-        self.is_scalar_M = len(initial_M.shape) == 0 or (len(initial_M.shape) == 1 and initial_M.shape[0] == 1)
+        self.is_scalar_M = (self.M.ndim == 0) or (self.M.ndim == 1 and self.M.shape[0] == 1)
 
     def pde(self, X_collocation: torch.Tensor) -> (torch.Tensor, torch.Tensor):
-        """
-        Compute the PDE residual loss and ODE residual loss (if applicable).
-        """
-        # Input is already normalized, no need to scale
         X_collocation.requires_grad_(True)
         
-        # Forward pass through the network
-        outputs = self.forward(X_collocation)
+        # Apply scaling for consistency with the parent class approach
+        X_scaled = self.apply_scaling(X_collocation)
+        outputs = self.forward(X_scaled)
         
-        # Extract u and compute gradients
+        # Extract variables from outputs
         if self.use_ode:
-            u = outputs[:, 0:1]  # Shape: (N_collocation, 1)
-            w = outputs[:, 1:]   # Shape: (N_collocation, n_state_vars)
+            u = outputs[:, 0:1]
+            w = outputs[:, 1:]
         else:
-            u = outputs  # Shape: (N_collocation, 1)
-        
-        # Compute gradients
+            u = outputs
+
+        # Compute derivatives in original coordinates
         du_dx = torch.autograd.grad(u.sum(), X_collocation, create_graph=True)[0]
-        d2u_dx2 = torch.zeros_like(u)
-        
-        # Second derivatives for x and y
         d2u_dx2_x = torch.autograd.grad(du_dx[:, 0].sum(), X_collocation, create_graph=True)[0][:, 0:1]
         d2u_dx2_y = torch.autograd.grad(du_dx[:, 1].sum(), X_collocation, create_graph=True)[0][:, 1:2]
-        
-        # Time derivative
         du_dt = du_dx[:, 2:3]
-        
-        # Compute Laplacian term
+
+        # Compute laplacian term using the learned parameter M
         if self.is_scalar_M:
             laplacian_term = self.M * (d2u_dx2_x + d2u_dx2_y)
         else:
-            # For tensor conductivity
-            laplacian_term = (
-                self.M[0] * d2u_dx2_x +
-                self.M[1] * d2u_dx2_y
-            )
-        
-        # Compute source term
+            laplacian_term = (self.M[0] * d2u_dx2_x + self.M[1] * d2u_dx2_y)
+
+        # Source term/ODE residual if applicable
         if self.use_ode:
-            # Use ODE for current terms
             ode_residuals = self.ode_func(u, w, X_collocation)
-            source_term = ode_residuals[:, 0:1]  # First residual corresponds to u
-            ode_loss = torch.mean(torch.square(ode_residuals[:, 1:]))  # Remaining residuals
+            source_term = ode_residuals[:, 0:1]
+            ode_loss = torch.mean((ode_residuals[:, 1:])**2)
         else:
-            # Use explicit source term function
             source_term = self.source_term_func(X_collocation[:, :2], X_collocation[:, 2:3])
             ode_loss = torch.tensor(0.0, device=self.device)
-        
-        # Compute PDE residual: du/dt - div(M * grad(u)) = I_ion
+
+        # PDE residual
         pde_residual = du_dt - laplacian_term - source_term
-        
-        # Compute mean squared PDE residual
-        pde_loss = torch.mean(torch.square(pde_residual))
-        
+        pde_loss = torch.mean(pde_residual**2)
+
         return pde_loss, ode_loss
 
 
