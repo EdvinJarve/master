@@ -1,0 +1,28 @@
+{
+    "num_inputs": 3,
+    "num_layers": 2,
+    "num_neurons": 256,
+    "device": "cpu",
+    "initial_M": [
+        0.01,
+        0.01
+    ],
+    "learning_rate": 0.0001,
+    "num_epochs": 30000,
+    "batch_size": 512,
+    "loss_weights": {
+        "pde_loss": 0.333,
+        "IC_loss": 0.333,
+        "BC_loss": 0.333,
+        "data_loss": 1000.0,
+        "ode_loss": 0.0
+    },
+    "source_term_initial_M": [
+        2.0,
+        1.0
+    ],
+    "num_ic": 500,
+    "num_collocation": 5000,
+    "num_boundary": 500,
+    "num_data": 5000
+}

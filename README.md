@@ -6,21 +6,25 @@ This master thesis work contains the implementation and results of monodomain an
 
 ### Monodomain Simulations
 
-The `monodomain` directory contains the scripts for monodomain simulations:
-- **mono_case1.py**: Script for the monodomain simulation case with analytic solution for testing the solver.
-- **mono_case2.py**: Script for the monodomain simulation case with an applied corner current.
-- **mono_case3.py**: Script for the third monodomain simulation case with an applied corner current with a strong nonisotropic conductivity tensor.
+The `monodomain_simulations` directory contains the scripts for monodomain simulations:
+- **analytical_case.py**: Script for the monodomain simulation case with analytic solution for testing the solver.
+- **corner_current.py**: Script for the monodomain simulation case with an applied corner current.
+- **corner_current_nonisotropic.py**: Script for the third monodomain simulation case with an applied corner current with a strong nonisotropic conductivity tensor.
+- **fitzhugh_nagumo.py**: Script for the fourth monodomain simulation where the current is goverened by the FitzHugh-Nagumo ODE.
+
 ### Bidomain Simulations
 
-The `bidomain` directory contains the scripts for bidomain simulations:
+The `bidomain` directory contains the scripts for bidomain simulations (currently not working):
 - **bi_case1.py**: Script for the bidomain simulation case with analytic solution for testing the solver.
 - **bi_case2.py**: Script for the bidomain simulation case with an applied corner current.
 - **bi_case3.py**: Script for the bidomain simulation case with an applied corner current with a strong nonisotropic conductivity tensor.
 
 ### Results
 
-The `monodomain_results` and `bidomain_results` directories contain the results for each case
-
+The `monodomain_results` and `bidomain_results` directories contain the results for each case. Preliminary results:
+- **Analytical case**: Both **FEM** and **PINNs** produce similar results, with an absolute error on the order of \(10^{-2}\).
+- **Corner Current**: Yet to converge properly
+- **FitzHugh-Nagumo**:  
 ### Utilities
 
 The `utils` directory contains utility scripts:

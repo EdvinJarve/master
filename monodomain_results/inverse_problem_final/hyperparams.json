@@ -1,0 +1,13 @@
+{
+    "num_inputs": 3,
+    "num_layers": 2,
+    "num_neurons": 256,
+    "device": "cpu",
+    "initial_M": 0.0,
+    "learning_rate": 0.001,
+    "epochs": 10000,
+    "batch_size": 128,
+    "loss_weights": null,
+    "weight_strategy": "dynamic",
+    "alpha": 0.9
+}
